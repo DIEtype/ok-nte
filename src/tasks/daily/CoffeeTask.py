@@ -17,6 +17,7 @@ class CoffeeTask(NTEOneTimeTask, BaseNTETask):
 
     CONF_MODE = "模式"
     MODE_CLAIM_AND_RESTOCK = "领取/补货"
+    MODE_CLAIM_ONLY = "仅领取收益"
     MODE_AUTO = "自动化"
 
     CONF_COLLECT_INCOME = "领取收益"
@@ -58,7 +59,7 @@ class CoffeeTask(NTEOneTimeTask, BaseNTETask):
                 self.CONF_PRICE_TABLE: "价格表识别(disabled 跳过商品优化以避免未识别价格的替换)",
             }
         )
-        options = [self.MODE_CLAIM_AND_RESTOCK]
+        options = [self.MODE_CLAIM_AND_RESTOCK, self.MODE_CLAIM_ONLY]
         # if self.is_chinese():
         #     options.append(self.MODE_AUTO)
         self.config_type.update(
@@ -104,8 +105,11 @@ class CoffeeTask(NTEOneTimeTask, BaseNTETask):
             raise
 
     def do_run(self) -> bool:
-        if self.config.get(self.CONF_MODE) == self.MODE_CLAIM_AND_RESTOCK:
+        mode = self.config.get(self.CONF_MODE)
+        if mode == self.MODE_CLAIM_AND_RESTOCK:
             return self.claim_coffee()
+        if mode == self.MODE_CLAIM_ONLY:
+            return self.claim_coffee(restock=False)
 
         self.log_info("正在执行一咖舍自动化")
         self._apply_runtime_config()
@@ -180,7 +184,7 @@ class CoffeeTask(NTEOneTimeTask, BaseNTETask):
             and self.config.get(self.CONF_BUY_GOODS, False)
         )
 
-    def claim_coffee(self):
+    def claim_coffee(self, *, restock=True):
         """领取一咖舍奖励"""
 
         def action():
@@ -203,12 +207,14 @@ class CoffeeTask(NTEOneTimeTask, BaseNTETask):
             time_out=10,
         )
         self.sleep(1)
-        self.wait_until(
+        returned_to_shop = self.wait_until(
             lambda: self.find_one(Labels.f5_coffee_panel),
             pre_action=lambda: self.operate_click(0.072, 0.886, interval=1),
             time_out=10,
             settle_time=0.5,
         )
+        if not restock:
+            return bool(returned_to_shop)
         self.sleep(1)
 
         # 进入补货

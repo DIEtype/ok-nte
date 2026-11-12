@@ -16,6 +16,7 @@ from src.tasks.daily.FountainTask import FountainTask
 from src.tasks.daily.FurnitureTask import FurnitureTask
 from src.tasks.daily.GiftTask import GiftTask
 from src.tasks.daily.StoreTask import StoreTask
+from src.tasks.FishingTask import FishingTask
 from src.tasks.NTEOneTimeTask import NTEOneTimeTask
 
 __all__ = ["DailyRoutineEntry", "DailyRoutineTask", "selection_is_complete"]
@@ -28,9 +29,11 @@ class DailyRoutineEntry:
     enabled_by_default: bool = False
     exclusive_group: str | None = None
     daily_config: bool = False
+    requires_main: bool = True
 
 
 DAILY_ROUTINE_ENTRIES = (
+    DailyRoutineEntry("fishing", FishingTask, daily_config=True, requires_main=False),
     DailyRoutineEntry("daily_anomaly", AnomalyTask, True, "daily_anomaly", daily_config=True),
     DailyRoutineEntry(
         "daily_anomaly_hunter", AnomalyHunter, False, "daily_anomaly", daily_config=True
@@ -39,8 +42,8 @@ DAILY_ROUTINE_ENTRIES = (
     DailyRoutineEntry("daily_claim", DailyClaimTask, True),
     DailyRoutineEntry("cinema_date", CinemaDateTask),
     DailyRoutineEntry("fountain", FountainTask),
-    DailyRoutineEntry("furniture", FurnitureTask),
     DailyRoutineEntry("gift", GiftTask),
+    DailyRoutineEntry("furniture", FurnitureTask),
     DailyRoutineEntry("store_purchase", StoreTask),
 )
 
@@ -432,7 +435,8 @@ class DailyRoutineTask(NTEOneTimeTask, BaseNTETask):
         """Map True, False and None task outcomes to success, failure and skipping."""
         self.info_set("当前任务", task.name)
         self.log_info(f"开始任务: {task.name}")
-        self.ensure_main(check_exit=True)
+        if self.entries_by_id()[task_id].requires_main:
+            self.ensure_main(check_exit=True)
         with self._active_task_context(task_id, task):
             result = task.do_run()
             if hasattr(task, "on_daily_end"):

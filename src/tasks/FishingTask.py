@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 
@@ -7,6 +8,7 @@ from ok import TaskDisabledException, WaitFailedException
 
 from src import text_white_color
 from src.Labels import Labels
+from src.audio.mute import mute_game_audio
 from src.tasks.BaseNTETask import BaseNTETask
 from src.tasks.flow.scene_flow import SceneReplan, StepFailure, StepPolicy
 from src.tasks.NTEOneTimeTask import NTEOneTimeTask
@@ -24,6 +26,7 @@ class FishingTask(NTEOneTimeTask, BaseNTETask):
     CONF_CONTROL_MODE = "控条模式"
     CONF_TAP_MULTIPLIER = "点按时长倍率"
     CONF_AUTO_BUY_BAIT = "自动补饵卖鱼"
+    CONF_MUTE_GAME = "任务期间静音游戏"
 
     MODE_HOLD = "长按"
     MODE_TAP = "点按"
@@ -54,38 +57,48 @@ class FishingTask(NTEOneTimeTask, BaseNTETask):
         self.group_name = "都市闲趣"
         self.group_icon = Icon.GAME
         self.add_rounds_config()
-        self.default_config.update(
-            {
-                self.CONF_CONTROL_MODE: self.MODE_HOLD,
-                self.CONF_TAP_MULTIPLIER: 1.0,
-                self.CONF_AUTO_BUY_BAIT: True,
-            }
-        )
-        self.config_description.update(
-            {
-                self.CONF_CONTROL_MODE: f"{self.MODE_HOLD}：平滑流畅, 易过冲\n"
-                f"{self.MODE_TAP}: 安全较慢, 防过冲",
-                self.CONF_TAP_MULTIPLIER: "点按模式专用。用于微调每次按键的持续时间",
-                self.CONF_AUTO_BUY_BAIT: "抛竿失败时，补充默认鱼饵并出售鱼获后重试",
-            }
-        )
-        self.config_type.update(
-            {
-                self.CONF_CONTROL_MODE: {
-                    "type": "drop_down",
-                    "options": [self.MODE_HOLD, self.MODE_TAP],
-                    "sub_configs": {
-                        self.MODE_TAP: self.CONF_TAP_MULTIPLIER,
-                    },
-                },
-            }
-        )
+        self.setup_config(self)
         self._morph_kernel = np.ones((3, 3), dtype=np.uint8)
         self._last_direction = None
         self._bar_active_key = None
         self._fishing_session: FishingSession | None = None
         self.add_exit_after_config()
         self._configure_scene_flow()
+
+    @classmethod
+    def setup_config(cls, target, daily=False):
+        if daily:
+            target.default_config[cls.CONF_ROUNDS] = 1
+            target.config_description[cls.CONF_ROUNDS] = "请先进入钓鱼界面, 日常钓鱼至少运行一轮"
+            target.config_type[cls.CONF_ROUNDS] = {"min": 1}
+        target.default_config.update(
+            {
+                cls.CONF_CONTROL_MODE: cls.MODE_HOLD,
+                cls.CONF_TAP_MULTIPLIER: 1.0,
+                cls.CONF_AUTO_BUY_BAIT: True,
+                cls.CONF_MUTE_GAME: False,
+            }
+        )
+        target.config_description.update(
+            {
+                cls.CONF_CONTROL_MODE: f"{cls.MODE_HOLD}：平滑流畅, 易过冲\n"
+                f"{cls.MODE_TAP}: 安全较慢, 防过冲",
+                cls.CONF_TAP_MULTIPLIER: "点按模式专用。用于微调每次按键的持续时间",
+                cls.CONF_AUTO_BUY_BAIT: "抛竿失败时，补充默认鱼饵并出售鱼获后重试",
+                cls.CONF_MUTE_GAME: "开始钓鱼后静音游戏, 任务结束或停止时恢复",
+            }
+        )
+        target.config_type.update(
+            {
+                cls.CONF_CONTROL_MODE: {
+                    "type": "drop_down",
+                    "options": [cls.MODE_HOLD, cls.MODE_TAP],
+                    "sub_configs": {
+                        cls.MODE_TAP: cls.CONF_TAP_MULTIPLIER,
+                    },
+                },
+            }
+        )
 
     def _configure_scene_flow(self):
         flow = self.scene_flow
@@ -180,10 +193,25 @@ class FishingTask(NTEOneTimeTask, BaseNTETask):
 
     def run(self):
         super().run()
+        return self._run_task()
+
+    def do_run(self) -> bool | None:
+        if not self.is_ready_to_cast():
+            self.log_info("请先进入可抛竿的钓鱼界面, 本次跳过自动钓鱼")
+            return None
+        if self.configured_rounds() < 1:
+            self.log_warning("日常钓鱼需要至少一轮, 本次跳过")
+            return None
+        self._run_task()
+        return self._round_state.success_count > 0 and self._round_state.failed_count == 0
+
+    def _run_task(self):
         try:
             self.reset_runtime_state()
             self._publish_config_info()
-            return self._run_fishing_flow()
+            mute = self.config.get(self.CONF_MUTE_GAME, False)
+            with mute_game_audio(self.hwnd) if mute else nullcontext():
+                return self._run_fishing_flow()
         except TaskDisabledException:
             raise
         except Exception as e:

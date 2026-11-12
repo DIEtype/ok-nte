@@ -392,6 +392,12 @@ msgstr "Auto-Refill Bait & Sell Fish"
 msgid "抛竿失败时，补充默认鱼饵并出售鱼获后重试"
 msgstr "When casting fails, refill default bait, sell catch, and retry"
 
+msgid "任务期间静音游戏"
+msgstr "Mute Game During Fishing"
+
+msgid "开始钓鱼后静音游戏, 任务结束或停止时恢复"
+msgstr "Mute the game during fishing and restore its audio when the task ends or is stopped"
+
 msgid "4列对应的键盘按键"
 msgstr "Keyboard keys for 4 columns"
 
@@ -1159,6 +1165,15 @@ msgstr "Cafe"
 msgid "领取/补货"
 msgstr "Claim/Restock"
 
+msgid "仅领取收益"
+msgstr "Claim Income Only"
+
+msgid "检查管家探索次数"
+msgstr "Check Butler Exploration Uses"
+
+msgid "通过金都云邸管家检查次数, 本周确认用完后直达副本。有剩余次数时提示并跳过自动战斗。"
+msgstr "Check the butler at Jindu Cloud Mansion. Once this week's uses are confirmed exhausted, go straight to the dungeon. If uses remain, report them and skip auto combat."
+
 msgid "全选"
 msgstr "Select All"
 
@@ -1182,6 +1197,21 @@ msgstr "Tap G"
 
 msgid "挑战玛门"
 msgstr "Challenge Mammon"
+
+msgid "周常家具奖励"
+msgstr "Weekly Furniture Rewards"
+
+msgid "领取绒绒棉花"
+msgstr "Collect Fluffy Cotton"
+
+msgid "请先进入钓鱼界面, 日常钓鱼至少运行一轮"
+msgstr "Enter the fishing screen first. Routine fishing runs at least one round."
+
+msgid "记住本周家具奖励"
+msgstr "Remember This Week’s Furniture Rewards"
+
+msgid "确认领取绒绒棉花或玛门奖励后, 本周跳过该项目。"
+msgstr "Skip the corresponding task for the rest of the week after the affinity gift or Mammon reward is confirmed."
 
 msgid "自动闯关"
 msgstr "Auto Challenge"

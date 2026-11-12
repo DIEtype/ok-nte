@@ -16,6 +16,7 @@ from src.tasks.daily.DailyRoutineTask import (
     selection_is_complete,
     start_routine_tasks,
 )
+from src.tasks.FishingTask import FishingTask
 
 
 class TestDailyRoutineConfig(unittest.TestCase):
@@ -31,7 +32,7 @@ class TestDailyRoutineConfig(unittest.TestCase):
 
         items = task.normalize_items()
 
-        self.assertEqual(items[0], {"id": "anomaly_pilgrimage", "enabled": False})
+        self.assertEqual(items[0], {"id": "fishing", "enabled": False})
         self.assertEqual([item for item in items if item["id"] in {"daily_claim", "coffee"}], saved)
         claim_index = items.index(saved[0])
         self.assertEqual(
@@ -41,6 +42,12 @@ class TestDailyRoutineConfig(unittest.TestCase):
         self.assertEqual(len(items), len(task.entries_by_id()))
         self.assertIn({"id": "daily_anomaly", "enabled": True}, items)
         self.assertEqual(task.normalize_items(), items)
+
+    def test_daily_fishing_has_its_own_finite_rounds_config(self):
+        routine = self._routine_task([])
+        schema = routine.daily_task_schema("fishing", None)
+        self.assertEqual(schema.default_config[FishingTask.CONF_ROUNDS], 1)
+        self.assertEqual(schema.config_type[FishingTask.CONF_ROUNDS]["min"], 1)
 
     def test_normalize_keeps_saved_exclusive_selection_when_adding_a_default(self):
         task = self._routine_task([{"id": "daily_anomaly_hunter", "enabled": True}])
@@ -276,6 +283,34 @@ class TestDailyRoutineStart(unittest.TestCase):
 
         self.assertTrue(started)
         controller.do_start.assert_called_once_with(routine_task)
+
+    def test_daily_fishing_keeps_the_prepared_fishing_screen(self):
+        task = object.__new__(DailyRoutineTask)
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.ensure_main = Mock()
+        task.routine_task_configs = {}
+        task._active_routine_task = None
+        task.sleep_check_interval = 1
+        fishing = SimpleNamespace(
+            name="自动钓鱼",
+            config={FishingTask.CONF_ROUNDS: 0},
+            sleep_check_interval=0.2,
+            do_run=Mock(side_effect=lambda: fishing.config[FishingTask.CONF_ROUNDS] == 1),
+        )
+        self.assertEqual(task._run_routine_task("fishing", fishing), "success")
+        fishing.do_run.assert_called_once_with()
+        task.ensure_main.assert_not_called()
+        self.assertEqual(fishing.config[FishingTask.CONF_ROUNDS], 0)
+
+    def test_daily_fishing_skips_without_a_ready_scene(self):
+        fishing = object.__new__(FishingTask)
+        fishing.is_ready_to_cast = Mock(return_value=False)
+        fishing.log_info = Mock()
+        fishing._run_task = Mock()
+
+        self.assertIsNone(fishing.do_run())
+        fishing._run_task.assert_not_called()
 
     def test_daily_routine_do_run_executes_selected_tasks_in_order_and_records_results(self):
         task = object.__new__(DailyRoutineTask)

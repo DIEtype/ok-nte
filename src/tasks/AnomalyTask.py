@@ -2,6 +2,7 @@ from ok import TaskDisabledException
 
 from src.combat.BaseCombatTask import BaseCombatTask
 from src.Labels import Labels
+from src.tasks.anomaly_sweep import AnomalySweep
 from src.tasks.BaseNTETask import BaseNTETask
 from src.tasks.BaseStaminaTask import BaseStaminaTask
 from src.utils.i18n_format import register_i18n_format
@@ -18,6 +19,7 @@ class AnomalyTask(BaseStaminaTask, BaseCombatTask):
     CONF_CONSOLE_ID = "空幕序号"
     CONF_CYCLEB_TASK_MODE = "循环模式"
     CONF_CUSTOM_CYCLE = "循环序列"
+    CONF_CHECK_SWEEP = "检查管家探索次数"
 
     # --- 循环模式 ---
     CYCLE_NONE = "停用"
@@ -107,6 +109,7 @@ class AnomalyTask(BaseStaminaTask, BaseCombatTask):
                 cls.CONF_ABILITY_ID: 1,
                 cls.CONF_ARC_ID: 1,
                 cls.CONF_CONSOLE_ID: 1,
+                cls.CONF_CHECK_SWEEP: False,
             }
         )
         if daily:
@@ -164,6 +167,10 @@ class AnomalyTask(BaseStaminaTask, BaseCombatTask):
                 cls.CONF_ABILITY_ID: cls.DESC_ID_RANGE_FMT.format(*cls.ABILITY_ID_RANGE),
                 cls.CONF_ARC_ID: cls.DESC_ID_RANGE_FMT.format(*cls.ARC_ID_RANGE),
                 cls.CONF_CONSOLE_ID: cls.DESC_ID_RANGE_FMT.format(*cls.CONSOLE_ID_RANGE),
+                cls.CONF_CHECK_SWEEP: (
+                    "通过金都云邸管家检查次数, 本周确认用完后直达副本。"
+                    "有剩余次数时提示并跳过自动战斗。"
+                ),
             }
         )
         if daily:
@@ -218,6 +225,10 @@ class AnomalyTask(BaseStaminaTask, BaseCombatTask):
         self.ensure_main()
         stamina_target = self.resolve_stamina_target()
         if stamina_target == 0:
+            return None
+
+        if self.config.get(self.CONF_CHECK_SWEEP) and (remaining := AnomalySweep(self).check()):
+            self.log_info(f"仍有 {remaining} 次快速探索, 跳过常规副本")
             return None
 
         self.open_f1_domain_page()

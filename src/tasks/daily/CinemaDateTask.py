@@ -1,5 +1,5 @@
-import re
 import time
+from unicodedata import normalize
 
 from ok import Box, TaskDisabledException
 
@@ -11,13 +11,13 @@ from src.utils import image_utils as iu
 
 class CinemaDateTask(NTEOneTimeTask, BaseNTETask):
     CINEMA_DATE_TARGET = "约会目标"
+    TARGET_ALIASES = {"明音": "明音凛", "明音凜": "明音凛"}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "影院约会"
         self.group_name = "日常/周常"
         self.visible = False
-        self.fallback_target = False
 
         self.default_config.update(
             {
@@ -35,8 +35,9 @@ class CinemaDateTask(NTEOneTimeTask, BaseNTETask):
             self.log_error("CinemaDateTask error", e)
             raise
 
-    def do_run(self) -> bool:
-        target = self.config.get(self.CINEMA_DATE_TARGET, "")
+    def do_run(self, target=None) -> bool:
+        if target is None:
+            target = self.config.get(self.CINEMA_DATE_TARGET, "")
         return self.run_cinema_date(target)
 
     def run_cinema_date(self, target=""):
@@ -59,9 +60,7 @@ class CinemaDateTask(NTEOneTimeTask, BaseNTETask):
 
             self.run_with_interval(lambda: self.operate(merged_action, block=True), interval=2)
 
-        ret = bool(self.wait_until(self.is_in_team, post_action=post, time_out=30))
-
-        return not self.fallback_target and ret
+        return bool(self.wait_until(self.is_in_team, post_action=post, time_out=30))
 
     def _tp_to_cinema(self):
         def action():
@@ -135,63 +134,62 @@ class CinemaDateTask(NTEOneTimeTask, BaseNTETask):
         return True
 
     def _select_date(self, target):
-        target_box = None
-        if target == "":
+        if target.strip():
+            target_box = self._find_configured_target(target)
+        else:
             self.log_info("默认使用顶部可选目标")
             target_box = self._top_selectable_target()
-        else:
-            page = 20
-            match = re.compile(target, re.IGNORECASE)
-            snap_box = self.box_of_screen(0.724, 0.723, 0.771, 0.892)
-
-            for _ in range(page):
-                target_boxes = self.ocr(0.772, 0.228, 0.914, 0.905, match=match, log=True)
-                if target_boxes:
-                    loc_y = target_boxes[0].y + target_boxes[0].height
-                    boxes = self._find_selectable_target()
-                    for box in boxes:
-                        if loc_y > box.y and loc_y < box.y + box.height:
-                            target_box = target_boxes[0]
-                            break
-                    if target_box:
-                        self.log_info(f"找到目标 {target_box}")
-                    else:
-                        self.log_warning(f"找到目标 {target_boxes[0]} 但不可用")
-                    break
-                if self.scroll_and_is_end(0.8391, 0.5333, -19, snap_box):
-                    break
-
             if not target_box:
-                self.log_info("尝试使用顶部可选目标")
-                for _ in range(page):
-                    target_box = self._top_selectable_target(mark_as_fallback=True)
-                    if target_box or self.scroll_and_is_end(0.8391, 0.5333, 19, snap_box):
-                        break
+                self.log_info("未找到任何可选目标")
 
         if not target_box:
-            self.log_info("未找到任何可选目标，结束任务")
             return False
-        
-        self.fallback_target = "fallback" in target_box.name
 
         return self.wait_click_confirm(
             pre_action=lambda: self.operate_click(target_box, interval=1),
             range=(0.650, 0.608, 0.705, 0.707),
         )
 
+    @classmethod
+    def _normalize_target(cls, name: str) -> str:
+        name = "".join(normalize("NFKC", name).split()).casefold()
+        return cls.TARGET_ALIASES.get(name, name)
+
+    def _find_configured_target(self, target: str) -> Box | None:
+        wanted = self._normalize_target(target)
+        snap_box = self.box_of_screen(0.724, 0.723, 0.771, 0.892)
+        at_end = False
+        for _ in range(20):
+            names = self.ocr(0.772, 0.228, 0.914, 0.905, log=True)
+            matches = [box for box in names if self._normalize_target(box.name or "") == wanted]
+            if matches:
+                if len(matches) == 1:
+                    name_box = matches[0]
+                    same_row = [
+                        button
+                        for button in self._find_selectable_target()
+                        if name_box.y < button.y + button.height
+                        and button.y < name_box.y + name_box.height
+                    ]
+                    if len(same_row) == 1:
+                        self.log_info(f"找到可邀约目标 {target}")
+                        return same_row[0]
+                self.log_warning(f"无法确认 {target} 对应的可邀约按钮, 结束任务")
+                return None
+            if at_end:
+                break
+            at_end = self.scroll_and_is_end(0.8391, 0.5333, -19, snap_box)
+        self.log_warning(f"未找到邀约目标 {target}, 结束任务")
+        return None
+
     def _find_selectable_target(self) -> list[Box]:
         box = self.box_of_screen(0.907, 0.232, 0.947, 0.907, hcenter=True)
         boxes = iu.find_color_enriched_regions(selectable_green_color, box, self.frame)
         return boxes
 
-    def _top_selectable_target(self, mark_as_fallback=False) -> Box | None:
+    def _top_selectable_target(self) -> Box | None:
         boxes = self._find_selectable_target()
-        if not boxes:
-            return
-        top_target = min(boxes, key=lambda box: box.y)
-        if mark_as_fallback:
-            top_target.name = "fallback_target"
-        return top_target
+        return min(boxes, key=lambda box: box.y, default=None)
 
 
 selectable_green_color = {

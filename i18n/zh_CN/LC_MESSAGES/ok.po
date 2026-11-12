@@ -1136,6 +1136,15 @@ msgstr ""
 msgid "领取/补货"
 msgstr ""
 
+msgid "仅领取收益"
+msgstr ""
+
+msgid "检查管家探索次数"
+msgstr ""
+
+msgid "通过金都云邸管家检查次数, 本周确认用完后直达副本。有剩余次数时提示并跳过自动战斗。"
+msgstr ""
+
 msgid "全选"
 msgstr ""
 
@@ -1158,6 +1167,21 @@ msgid "点按G"
 msgstr ""
 
 msgid "挑战玛门"
+msgstr ""
+
+msgid "周常家具奖励"
+msgstr ""
+
+msgid "领取绒绒棉花"
+msgstr ""
+
+msgid "请先进入钓鱼界面, 日常钓鱼至少运行一轮"
+msgstr ""
+
+msgid "记住本周家具奖励"
+msgstr ""
+
+msgid "确认领取绒绒棉花或玛门奖励后, 本周跳过该项目。"
 msgstr ""
 
 msgid "自动闯关"

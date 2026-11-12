@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 from src.coffee import CoffeeFoodOption, CoffeeRuntime
 from src.tasks.daily.CoffeeTask import CoffeeTask
@@ -275,6 +275,21 @@ class TestCoffeeTaskConfig(unittest.TestCase):
         task = object.__new__(CoffeeTask)
         task.config = config or {}
         return task
+
+    def test_claim_only_never_enters_restock(self):
+        task = self._task({CoffeeTask.CONF_MODE: CoffeeTask.MODE_CLAIM_ONLY})
+        task.log_info = Mock()
+        task.retry_on_action = Mock(return_value=True)
+        task.ensure_main = Mock()
+        task.sleep = Mock()
+        task.operate_click = Mock()
+        task.wait_until = Mock(side_effect=lambda condition, pre_action, **kw: pre_action() or True)
+
+        self.assertTrue(task.do_run())
+        self.assertEqual(
+            task.operate_click.call_args_list,
+            [call(0.188, 0.877, interval=1), call(0.072, 0.886, interval=1)],
+        )
 
     def test_actions_requested_defaults_to_income_restock_buy(self):
         task = self._task(

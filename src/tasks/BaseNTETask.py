@@ -693,6 +693,21 @@ class BaseNTETask(
         self.sleep(1.5)
         return result
 
+    def open_house_panel(self):
+        def action():
+            self.openF5panel()
+            self.operate_click(*self.pos.panels.f5.house)
+            self.sleep(0.5)
+            return self.wait_panel(Labels.f5_house_panel)
+
+        if self.find_one(Labels.f5_house_panel):
+            return True
+        if not self.retry_on_action(action, self.ensure_main):
+            self.log_error("无法找到房产面板")
+            return False
+        self.sleep(1)
+        return True
+
     def openESCpanel(self):
         def action():
             if self.is_in_team():

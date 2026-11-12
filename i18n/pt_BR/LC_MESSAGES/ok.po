@@ -417,6 +417,12 @@ msgstr ""
 "Se a arremessada falhar, reabastece a isca padrão, vende a captura e tenta "
 "novamente"
 
+msgid "任务期间静音游戏"
+msgstr "Silenciar o jogo durante a pesca"
+
+msgid "开始钓鱼后静音游戏, 任务结束或停止时恢复"
+msgstr "Silencia o jogo durante a pesca e restaura o áudio ao finalizar ou interromper a tarefa"
+
 msgid "4列对应的键盘按键"
 msgstr "Teclas do teclado para 4 colunas"
 
@@ -896,6 +902,15 @@ msgstr "Cafeteria"
 msgid "领取/补货"
 msgstr "Resgatar/Reabastecer"
 
+msgid "仅领取收益"
+msgstr "Apenas resgatar rendimentos"
+
+msgid "检查管家探索次数"
+msgstr "Verificar explorações do mordomo"
+
+msgid "通过金都云邸管家检查次数, 本周确认用完后直达副本。有剩余次数时提示并跳过自动战斗。"
+msgstr "Consulte o mordomo da Jindu Cloud Mansion. Se os usos semanais se esgotaram, vá direto à masmorra. Se houver usos restantes, informe a quantidade e pule o combate automático."
+
 msgid "全选"
 msgstr "Selecionar Tudo"
 
@@ -919,6 +934,21 @@ msgstr "Pressionar G"
 
 msgid "挑战玛门"
 msgstr "Desafiar Mammon"
+
+msgid "周常家具奖励"
+msgstr "Recompensas semanais de móveis"
+
+msgid "领取绒绒棉花"
+msgstr "Coletar algodão fofo"
+
+msgid "请先进入钓鱼界面, 日常钓鱼至少运行一轮"
+msgstr "Abra primeiro a tela de pesca. A rotina executa pelo menos uma rodada."
+
+msgid "记住本周家具奖励"
+msgstr "Lembrar as recompensas de móveis desta semana"
+
+msgid "确认领取绒绒棉花或玛门奖励后, 本周跳过该项目。"
+msgstr "Pula a tarefa correspondente pelo resto da semana após confirmar o presente de afinidade ou a recompensa de Mammon."
 
 msgid "自动闯关"
 msgstr "Desafio Automático"

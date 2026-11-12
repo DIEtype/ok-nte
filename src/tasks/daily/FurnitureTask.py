@@ -1,19 +1,33 @@
+import re
+
 from ok import TaskDisabledException
 
 from src.combat.BaseCombatTask import BaseCombatTask
 from src.Labels import Labels
 from src.tasks.NTEOneTimeTask import NTEOneTimeTask
+from src.tasks.weekly_progress import FLUFF_COLLECTED, MAMMON_COLLECTED, WeeklyProgress
+
+_FLUFF_TOAST = re.compile(r"^绒绒棉花\s*[x×]\s*[1-9][0-9]*$", re.IGNORECASE)
+_MAMMON_EXIT = re.compile(r"^退出(?:[（(][0-9]+\s*s[）)])?$", re.IGNORECASE)
+_GOLD_NUMBER = re.compile(r"(?:[0-9]+|[0-9]{1,3}(?:[,，][0-9]{3})+)")
 
 
 class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
+    CONF_FLUFF = "领取绒绒棉花"
     CONF_MAMMON = "挑战玛门"
+    CONF_WEEKLY_TRACKING = "记住本周家具奖励"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.name = "异象家具"
+        self.name = "周常家具奖励"
         self.group_name = "日常/周常"
         self.visible = False
-        self.default_config.update({self.CONF_MAMMON: True})
+        self.default_config.update(
+            {self.CONF_FLUFF: True, self.CONF_MAMMON: True, self.CONF_WEEKLY_TRACKING: False}
+        )
+        self.config_description[self.CONF_WEEKLY_TRACKING] = (
+            "确认领取绒绒棉花或玛门奖励后, 本周跳过该项目。"
+        )
 
     def run(self):
         super().run()
@@ -25,7 +39,7 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
             self.log_error("FurnitureTask error", e)
             raise
 
-    def do_run(self) -> bool:
+    def do_run(self) -> bool | None:
         return self.claim_anomaly_furniture()
 
     def claim_anomaly_furniture(self):
@@ -33,17 +47,27 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
 
         self.log_info("正在领取异象家具奖励")
 
-        furniture_list = [
-            Labels.anomaly_fluff,
-        ]
-
+        furniture_list = []
+        if self.config.get(self.CONF_FLUFF, True):
+            furniture_list.append(Labels.anomaly_fluff)
         if self.config.get(self.CONF_MAMMON):
             furniture_list.append(Labels.anomaly_mammon)
+        if not furniture_list:
+            return None
+
+        progress = None
+        if self.config.get(self.CONF_WEEKLY_TRACKING):
+            self.ensure_main()
+            progress = WeeklyProgress(self)
 
         furniture_results = {}
         for furniture in furniture_list:
+            key = FLUFF_COLLECTED if furniture == Labels.anomaly_fluff else MAMMON_COLLECTED
+            if progress is not None and progress.is_done(key):
+                self.log_info(f"本周已确认 {furniture} 领取完成, 跳过")
+                continue
             try:
-                claimed = self.claim_furniture(furniture)
+                claimed = self.claim_furniture(furniture, progress)
             except TaskDisabledException:
                 raise
             except Exception as e:
@@ -54,28 +78,14 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
             result = "成功" if claimed else "失败"
             self.log_info(f"异象家具 {furniture} 领取{result}")
 
+        if not furniture_results:
+            return None
         all_claimed = all(furniture_results.values())
         if all_claimed:
             self.log_info("异象家具奖励全部领取成功")
         else:
             self.log_error("异象家具奖励未能全部领取成功")
         return all_claimed
-
-    def open_house_panel(self):
-        def action():
-            self.openF5panel()
-            self.operate_click(*self.pos.panels.f5.house)
-            self.sleep(0.5)
-            return self.wait_panel(Labels.f5_house_panel)
-
-        if self.find_one(Labels.f5_house_panel):
-            return True
-        result = self.retry_on_action(action, self.ensure_main)
-        if not result:
-            self.log_error("无法找到房产面板")
-            return False
-        self.sleep(1)
-        return True
 
     def check_house_lock(self, ratio_y):
         box = self.box_of_screen(0.050, ratio_y - 0.1, width=0.054, height=0.079, hcenter=True)
@@ -190,7 +200,7 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
         self.click_traval_button()
         return self.wait_in_team(time_out=300, settle_time=1)
 
-    def claim_furniture(self, furniture):
+    def claim_furniture(self, furniture, progress=None):
         if not self.teleport_to_furniture(furniture):
             return False
 
@@ -220,14 +230,17 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
         confirm = self.retry_on_action(action_2, attempt=10, raise_if_failed=True)
 
         if furniture == Labels.anomaly_fluff:
-            ret = self.operate_click(confirm, after_sleep=0.5)
+            if progress is None:
+                ret = self.operate_click(confirm, after_sleep=0.5)
+            else:
+                ret = self._claim_weekly_fluff(confirm, progress)
         else:
-            ret = self.click_furniture(furniture)
+            ret = self.click_furniture(furniture, progress)
 
         self.ensure_main()
         return ret
 
-    def click_furniture(self, furniture):
+    def click_furniture(self, furniture, progress=None):
         # 滚动至顶部
         self.operate(
             lambda: self.scroll(
@@ -266,14 +279,91 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
             block=True,
         )
         self.sleep(0.5)
-        return self.after_claim_action(furniture)
+        return self.after_claim_action(furniture, progress)
 
-    def after_claim_action(self, furniture):
+    def after_claim_action(self, furniture, progress=None):
         match furniture:
             case Labels.anomaly_mammon:
+                if progress is not None:
+                    return self._claim_weekly_mammon(progress)
                 return self.claim_mammon()
             case _:
                 return True
+
+    def _claim_weekly_fluff(self, confirm, progress):
+        popup_box = self.box_of_screen(0.452, 0.270, 0.547, 0.427, hcenter=True)
+
+        def dismiss_popup():
+            if self.find_one(Labels.reward_popup, box=popup_box):
+                self.operate_click(0.5, 0.77, interval=0.8, action_name="dismiss_fluff_reward")
+
+        self.operate_click(confirm)
+        if not self.wait_until(self._find_fluff_toast, post_action=dismiss_popup, time_out=6):
+            self.log_warning("未看到绒绒棉花到账")
+            return False
+        progress.mark_done(FLUFF_COLLECTED)
+        return True
+
+    def _find_fluff_toast(self):
+        return self.ocr(0.0, 0.389, 0.198, 0.556, match=_FLUFF_TOAST)
+
+    def _read_mammon_gold(self, region) -> int | None:
+        values = [
+            box.name.strip()
+            for box in self.ocr(*region)
+            if box.name and _GOLD_NUMBER.fullmatch(box.name.strip())
+        ]
+        if len(values) == 1:
+            return int(values[0].replace(",", "").replace("，", ""))
+        return None
+
+    def _mammon_week_record(self) -> int | None:
+        if self.ocr(0.584, 0.554, 0.711, 0.606, match="本期最高夺金记录"):
+            return self._read_mammon_gold((0.698, 0.597, 0.766, 0.685))
+        return None
+
+    def _mammon_reward_exit(self):
+        if not self.ocr(0.297, 0.585, 0.463, 0.635, match="本次夺金记录"):
+            return None
+        if not self._read_mammon_gold((0.636, 0.585, 0.702, 0.635)):
+            return None
+        exits = self.ocr(0.313, 0.832, 0.446, 0.887, match=_MAMMON_EXIT)
+        return exits[0] if exits else None
+
+    def _claim_weekly_mammon(self, progress):
+        start = self.wait_ocr(0.531, 0.744, 0.674, 0.795, match="开始挑战", time_out=8)
+        if not start:
+            return False
+        record = self._mammon_week_record()
+        if record is None:
+            self.log_warning("未能确认玛门本期最高夺金记录")
+            return False
+        if record > 0:
+            progress.mark_done(MAMMON_COLLECTED)
+            return True
+
+        def collect():
+            if exit_button := self._mammon_reward_exit():
+                return exit_button
+            self.walk_to_treasure()
+            self.send_interac(handle_claim=False)
+            return self.wait_until(self._mammon_reward_exit, time_out=4)
+
+        self.operate_click(start[0])
+        if self.wait_in_team(time_out=60, settle_time=0.5, raise_if_not_found=False):
+            if exit_button := self._fight_mammon(collect):
+                progress.mark_done(MAMMON_COLLECTED)
+                self.operate_click(exit_button)
+                return True
+            self.exit_anomaly()
+        return False
+
+    def _fight_mammon(self, collect):
+        if self.walk_until_combat(run=True):
+            self.combat_once()
+            self.rotate_and_find_treasure()
+            return self.retry_on_action(collect)
+        return None
 
     def claim_mammon(self):
         exc_msg = "mammon has record"
@@ -307,11 +397,8 @@ class FurnitureTask(NTEOneTimeTask, BaseCombatTask):
                 raise
 
         if run_mammon:
-            if self.walk_until_combat(run=True):
-                self.combat_once()
-                self.rotate_and_find_treasure()
-                if self.retry_on_action(action):
-                    return True
+            if self._fight_mammon(action):
+                return True
             self.exit_anomaly()
         self.ensure_main()
         return ret

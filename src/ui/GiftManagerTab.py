@@ -1,3 +1,5 @@
+import re
+
 from ok import og, relative_box
 from ok.ui.qt.widget.CustomTab import CustomTab
 from PySide6.QtCore import Qt, Signal
@@ -23,6 +25,7 @@ from qfluentwidgets import (
 )
 
 from src.events import communicate
+from src.gifts.affinity import MAX_AFFINITY, load_affinity
 from src.gifts.GiftManager import GiftManager
 from src.gifts.layout import GIFT_LAYOUT
 from src.tasks.daily.GiftTask import GiftTask
@@ -104,7 +107,7 @@ class GiftPriorityCard(BorderCardWidget):
 
 
 class GiftManagerTab(CustomTab):
-    """A single-screen editor for captured character gifts and task controls."""
+    """Edit gift profiles and start character discovery or gifting."""
 
     def __init__(self):
         super().__init__()
@@ -115,7 +118,7 @@ class GiftManagerTab(CustomTab):
         self._loading_profile = False
         self.gift_cards: list[GiftPriorityCard] = []
         self.task: GiftTask | None = None
-        self._capture_pending = False
+        self._pending_mode: str | None = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -124,6 +127,7 @@ class GiftManagerTab(CustomTab):
         root.addWidget(self._build_profile_panel(), 1)
         root.addWidget(self._build_editor_panel(), 4)
 
+        self.scan_button.clicked.connect(self._start_scan)
         self.capture_button.clicked.connect(lambda: self._start_capture(None))
         self.recapture_button.clicked.connect(lambda: self._start_capture(self.current_profile_id))
         self.delete_button.clicked.connect(self._delete_current)
@@ -133,8 +137,12 @@ class GiftManagerTab(CustomTab):
         self.enabled_switch.checkedChanged.connect(self._update_enabled_status)
         self.enabled_switch.checkedChanged.connect(self._save_current_options)
         self.count_combo.currentIndexChanged.connect(self._save_current_options)
+        self.gift_mode_combo.currentIndexChanged.connect(self._save_current_options)
+        self.target_names_edit.returnPressed.connect(self._apply_target_names)
+        self.target_names_button.clicked.connect(self._apply_target_names)
         self.name_edit.editingFinished.connect(self._save_current_options)
         communicate.task.connect(self._on_framework_task_changed)
+        communicate.starting_emulator.connect(self._on_start_completed)
 
         self._refresh_profiles()
         self._refresh_task_controls()
@@ -152,10 +160,11 @@ class GiftManagerTab(CustomTab):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        self.capture_button = PrimaryPushButton(FluentIcon.CAMERA, self.tr("新增角色"), panel)
+        self.scan_button = PushButton(FluentIcon.SEARCH, self.tr("扫描角色与好感度"), panel)
+        self.capture_button = PushButton(FluentIcon.CAMERA, self.tr("新增角色"), panel)
         self.recapture_button = PushButton(FluentIcon.SYNC, self.tr("更新当前角色"), panel)
         self.delete_button = PushButton(FluentIcon.DELETE, self.tr("删除当前角色"), panel)
-        for button in (self.capture_button, self.recapture_button, self.delete_button):
+        for button in (self.scan_button, self.capture_button, self.recapture_button, self.delete_button):
             layout.addWidget(button)
 
         self.profile_list = ListWidget(panel)
@@ -175,13 +184,21 @@ class GiftManagerTab(CustomTab):
         layout.addWidget(TitleLabel(self.tr_name, editor))
 
         hint = BodyLabel(
-            self.tr("在游戏赠礼页点击{}。点击礼物卡片可设定优先级，再次点击取消。").format(
-                self.tr("新增角色")
+            self.tr(
+                "输入角色全名后可直接开始赠礼，任务会同时刷新名单内角色的好感度。"
             ),
             editor,
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        names_row = QHBoxLayout()
+        self.target_names_edit = LineEdit(editor)
+        self.target_names_edit.setPlaceholderText(self.tr("明音凛、曳尔沐"))
+        self.target_names_button = PrimaryPushButton(FluentIcon.EDIT, self.tr("应用名单"), editor)
+        names_row.addWidget(self.target_names_edit, 1)
+        names_row.addWidget(self.target_names_button)
+        layout.addLayout(names_row)
 
         self.name_card = SimpleCardWidget(editor)
         name_layout = QHBoxLayout(self.name_card)
@@ -210,6 +227,13 @@ class GiftManagerTab(CustomTab):
         for count in range(1, 4):
             self.count_combo.addItem(str(count), userData=count)
 
+        self.gift_mode_combo = ComboBox(self.settings_card)
+        self.gift_mode_combo.addItem(self.tr("按手动优先级"), userData=False)
+        self.gift_mode_combo.addItem(self.tr("自动选择 +400"), userData=True)
+
+        self.affinity_status = BodyLabel(self.settings_card)
+        self.affinity_status.setWordWrap(True)
+
         self.settings_card.addGroup(
             FluentIcon.HEART,
             self.tr("赠礼状态"),
@@ -228,10 +252,23 @@ class GiftManagerTab(CustomTab):
             "",
             self.count_combo,
         ).contentLabel.hide()
+        self.settings_card.addGroup(
+            FluentIcon.HEART,
+            self.tr("礼物选择"),
+            "",
+            self.gift_mode_combo,
+        ).contentLabel.hide()
+        self.settings_card.addGroup(
+            FluentIcon.HEART,
+            self.tr("上次读取的好感度"),
+            "",
+            self.affinity_status,
+        ).contentLabel.hide()
 
         layout.addWidget(self.settings_card)
 
         gifts_card = HeaderCardWidget(editor)
+        self.gifts_card = gifts_card
         gifts_card.setTitle(self.tr("礼物优先级"))
         gifts_card.viewLayout.setContentsMargins(14, 14, 14, 14)
         self.gift_grid_widget = QWidget(gifts_card.view)
@@ -270,7 +307,17 @@ class GiftManagerTab(CustomTab):
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
         for profile_id, profile in self.manager.get_profiles().items():
-            item = QListWidgetItem(profile["display_name"])
+            affinity = load_affinity(profile.get("affinity"))
+            title = profile["display_name"]
+            if affinity:
+                if affinity.remaining == 0:
+                    title += self.tr(" · 满级")
+                elif affinity.remaining is not None:
+                    title += self.tr(" · 差 {:,}").format(affinity.remaining)
+                else:
+                    title += self.tr(" · {} 级").format(affinity.level)
+            item = QListWidgetItem(title)
+            item.setToolTip(self._affinity_text(profile))
             item.setData(Qt.ItemDataRole.UserRole, profile_id)
             self.profile_list.addItem(item)
             if profile_id == selected_id:
@@ -297,6 +344,23 @@ class GiftManagerTab(CustomTab):
             if item.widget():
                 item.widget().deleteLater()
 
+    def _affinity_text(self, profile: dict) -> str:
+        affinity = load_affinity(profile.get("affinity"))
+        if affinity is None:
+            return self.tr("尚未读取")
+        if affinity.remaining == 0:
+            return self.tr("10 级 · 已满级")
+        parts = [self.tr("{} 级").format(affinity.level)]
+        if affinity.points is not None:
+            parts.append(self.tr("本级 {:,}/{:,}").format(affinity.points, affinity.next_level))
+        remaining = affinity.remaining
+        if remaining is not None:
+            parts.append(self.tr("累计 {:,}/{:,}").format(MAX_AFFINITY - remaining, MAX_AFFINITY))
+            parts.append(self.tr("距 10 级还差 {:,}").format(remaining))
+        else:
+            parts.append(self.tr("距 10 级点数待确认"))
+        return " · ".join(parts)
+
     def _render_current(self) -> None:
         self._loading_profile = True
         self._clear_gift_grid()
@@ -304,26 +368,32 @@ class GiftManagerTab(CustomTab):
             self.manager.get_profile(self.current_profile_id) if self.current_profile_id else None
         )
         has_profile = profile is not None
-        self.recapture_button.setEnabled(has_profile)
+        has_frame = bool(profile and profile["frame_id"])
         self.delete_button.setEnabled(has_profile)
         self.enabled_switch.setEnabled(has_profile)
         self.count_combo.setEnabled(has_profile)
+        self.gift_mode_combo.setEnabled(has_frame)
         self.name_edit.setEnabled(has_profile)
-        self.name_card.setVisible(has_profile)
-        self.gift_grid_widget.setVisible(has_profile)
+        self.name_card.setVisible(has_frame)
+        self.name_preview.clear()
+        self.gifts_card.setVisible(has_frame and not profile["only_gift_400"])
+        self._refresh_task_controls()
         if not profile:
             self.enabled_switch.setChecked(False)
             self._update_enabled_status(False)
             self.count_combo.setCurrentIndex(2)
+            self.gift_mode_combo.setCurrentIndex(0)
             self.name_edit.clear()
-            self.name_preview.clear()
+            self.affinity_status.setText(self.tr("尚未读取"))
             self._loading_profile = False
             return
 
         self.enabled_switch.setChecked(profile["enabled"])
         self._update_enabled_status(profile["enabled"])
         self.count_combo.setCurrentIndex(profile["target_count"] - 1)
+        self.gift_mode_combo.setCurrentIndex(int(profile["only_gift_400"]))
         self.name_edit.setText(profile["display_name"])
+        self.affinity_status.setText(self._affinity_text(profile))
         frame = self.manager.load_frame(profile)
         if frame is not None:
             height, width = frame.shape[:2]
@@ -393,6 +463,7 @@ class GiftManagerTab(CustomTab):
             self.current_profile_id,
             enabled=self.enabled_switch.isChecked(),
             target_count=self.count_combo.currentData(),
+            only_gift_400=self.gift_mode_combo.currentData(),
             display_name=self.name_edit.text(),
         )
         self._refresh_profiles(self.current_profile_id)
@@ -402,20 +473,54 @@ class GiftManagerTab(CustomTab):
         if task is None:
             self._show_error(self.tr("捕获失败"), self.tr("赠礼任务未注册"))
             return
-        self.capture_button.setEnabled(False)
-        self.recapture_button.setEnabled(False)
-        self._capture_pending = True
         task.capture_profile(profile_id)
+        self._pending_mode = task.MODE_CAPTURE
+        self._refresh_task_controls(task)
         og.app.start_controller.start(task)
 
-    def _on_framework_task_changed(self, task) -> None:
-        if task is not self._get_task():
+    def _apply_target_names(self) -> bool:
+        raw_names = self.target_names_edit.text().strip()
+        if not raw_names:
+            return True
+        names = [text.strip() for text in re.split(r"[,，、;；\n]+", raw_names) if text.strip()]
+        if not names or any(len(name) > 32 or not any(c.isalpha() for c in name) for name in names):
+            self._show_error(self.tr("无法应用名单"), self.tr("请输入角色全名，用逗号或顿号分隔。"))
+            return False
+        try:
+            self.manager.register_characters(names, activate=True)
+        except OSError as error:
+            self._show_error(self.tr("保存失败"), str(error))
+            return False
+        self.target_names_edit.clear()
+        self._refresh_profiles()
+        return True
+
+    def _start_scan(self) -> None:
+        task = self._get_task()
+        if task is None:
+            self._show_error(self.tr("无法扫描"), self.tr("赠礼任务未注册"))
             return
-        if task.running or task.mode is not None:
+        task.request_character_scan()
+        self._pending_mode = task.MODE_SCAN
+        self._refresh_task_controls(task)
+        og.app.start_controller.start(task)
+
+    def _on_start_completed(self, done, error, _seconds_left) -> None:
+        if not done or not error or self._pending_mode is None:
+            return
+        task = self._get_task()
+        if task is not None and not task.running and not task.enabled:
+            self._pending_mode = None
+            self._refresh_task_controls(task)
+
+    def _on_framework_task_changed(self, task) -> None:
+        if task is None or task is not self._get_task():
+            return
+        if task.running or task.enabled:
             self._refresh_task_controls(task)
             return
-        if self._capture_pending:
-            self._capture_pending = False
+        mode, self._pending_mode = self._pending_mode, None
+        if mode == task.MODE_CAPTURE:
             self._on_capture_done(
                 task.capture_frame,
                 task.capture_error,
@@ -423,7 +528,27 @@ class GiftManagerTab(CustomTab):
                 list(task.capture_blocked_slots),
                 task.capture_profile_id,
             )
+        elif mode == task.MODE_SCAN:
+            self._on_scan_done(task)
+        elif mode == task.MODE_RUN:
+            self._refresh_profiles()
         self._refresh_task_controls(task)
+
+    def _on_scan_done(self, task: GiftTask) -> None:
+        if task.scan_result is None:
+            self._show_error(self.tr("扫描未完成"), task.scan_error or self.tr("无法扫描角色"))
+            return
+        recognized, added = task.scan_result
+        self._refresh_profiles()
+        InfoBar.success(
+            title=self.tr("角色扫描完成"),
+            content=self.tr("识别到 {recognized} 个角色，新增 {added} 个。请启用要送礼的角色。").format(
+                recognized=recognized, added=added,
+            ),
+            position=InfoBarPosition.TOP,
+            duration=4500,
+            parent=self,
+        )
 
     def _on_capture_done(
         self,
@@ -433,8 +558,6 @@ class GiftManagerTab(CustomTab):
         blocked_slots: list[int],
         profile_id: str | None,
     ) -> None:
-        self.capture_button.setEnabled(True)
-        self.recapture_button.setEnabled(self.current_profile_id is not None)
         if error:
             self._show_error(self.tr("捕获失败"), error)
             return
@@ -470,16 +593,25 @@ class GiftManagerTab(CustomTab):
         self._refresh_profiles()
 
     def _start_run(self) -> None:
-        if not self.manager.get_enabled_profiles():
-            self._show_error(self.tr("无法开始"), self.tr("请先捕获、选择礼物并启用至少一个角色。"))
-            return
         task = self._get_task()
         if task is None:
             self._show_error(self.tr("无法开始"), self.tr("赠礼任务未注册"))
             return
+        if task.enabled and task.paused:
+            og.app.start_controller.start(task)
+            return
+        if not self._apply_target_names():
+            return
+        if not self.manager.get_enabled_profiles():
+            self._show_error(
+                self.tr("无法开始"),
+                self.tr("请启用至少一个角色, 并选择礼物或开启自动选择 +400。"),
+            )
+            return
         task.run_gift_mode()
-        og.app.start_controller.start(task)
+        self._pending_mode = task.MODE_RUN
         self._refresh_task_controls(task)
+        og.app.start_controller.start(task)
 
     def _stop_run(self) -> None:
         task = self._get_task()
@@ -488,6 +620,7 @@ class GiftManagerTab(CustomTab):
         if task.executor.current_task is task:
             task.executor.stop_current_task()
         else:
+            self._pending_mode = None
             task.disable()
             task.unpause()
         self._refresh_task_controls(task)
@@ -499,10 +632,17 @@ class GiftManagerTab(CustomTab):
             self.stop_button.setEnabled(False)
             return
         active = task.running or task.enabled
+        can_start = not active and self._pending_mode is None
+        profile = self.manager.get_profile(self.current_profile_id)
+        self.scan_button.setEnabled(can_start)
+        self.capture_button.setEnabled(can_start)
+        self.target_names_edit.setEnabled(can_start)
+        self.target_names_button.setEnabled(can_start)
+        self.recapture_button.setEnabled(can_start and bool(profile and profile["frame_id"]))
         self.stop_button.setEnabled(active)
-        if task.paused:
-            self.start_button.setText(self.tr("继续赠礼"))
+        if active and task.paused:
+            self.start_button.setText(self.tr("继续任务"))
             self.start_button.setEnabled(True)
         else:
             self.start_button.setText(self.tr("开始赠礼"))
-            self.start_button.setEnabled(not active)
+            self.start_button.setEnabled(can_start)

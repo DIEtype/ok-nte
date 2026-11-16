@@ -8,6 +8,7 @@ import numpy as np
 from ok import Logger, og
 
 from src.gifts import GiftDb
+from src.gifts.affinity import AffinityProgress
 
 logger = Logger.get_logger(__name__)
 
@@ -73,8 +74,10 @@ class GiftManager:
             frame[
                 blur_box.y : blur_box.y + blur_box.height, blur_box.x : blur_box.x + blur_box.width
             ] = 0
-        if not cv2.imwrite(str(path), frame):
+        ok, encoded = cv2.imencode(".png", frame)
+        if not ok:
             raise IOError(f"Failed to write gift capture: {path}")
+        path.write_bytes(encoded.tobytes())
 
     def save(self) -> None:
         with self._data_lock:
@@ -95,8 +98,63 @@ class GiftManager:
         return {
             profile_id: profile
             for profile_id, profile in self.get_profiles().items()
-            if profile["enabled"] and profile["selected_slots"]
+            if profile["enabled"] and (profile["selected_slots"] or profile["only_gift_400"])
         }
+
+    def register_characters(
+        self,
+        names: list[str],
+        *,
+        activate: bool = False,
+        affinities: dict[str, AffinityProgress] | None = None,
+    ) -> int:
+        with self._data_lock:
+            profiles = self.get_profiles()
+            existing = {
+                GiftDb.character_name_key(profile["character_name"] or profile["display_name"]): profile_id
+                for profile_id, profile in profiles.items()
+            }
+            if activate:
+                for profile in profiles.values():
+                    profile["enabled"] = False
+            added = 0
+            for name in names:
+                key = GiftDb.character_name_key(name)
+                if not key:
+                    continue
+                profile_id = existing.get(key)
+                if profile_id is None:
+                    profile_id = f"gift_{uuid.uuid4().hex}"
+                    profiles[profile_id] = GiftDb.normalize_profile(
+                        profile_id, {"character_name": name, "enabled": activate}
+                    )
+                    existing[key] = profile_id
+                    added += 1
+                profile = profiles[profile_id]
+                if activate:
+                    profile["enabled"] = True
+                    if not profile["character_name"]:
+                        profile["character_name"] = name
+                    if not profile["selected_slots"]:
+                        profile["only_gift_400"] = True
+                if affinities and key in affinities:
+                    profile["affinity"] = affinities[key].to_dict()
+            if profiles != self.db["profiles"]:
+                updated_db = {**self.db, "profiles": profiles}
+                GiftDb.save_db(DB_PATH, updated_db)
+                self.db = updated_db
+            return added
+
+    def record_affinities(self, snapshots: dict[str, AffinityProgress]) -> None:
+        with self._data_lock:
+            profiles = self.get_profiles()
+            for profile_id, snapshot in snapshots.items():
+                if profile_id in profiles:
+                    profiles[profile_id]["affinity"] = snapshot.to_dict()
+            if profiles != self.db["profiles"]:
+                updated_db = {**self.db, "profiles": profiles}
+                GiftDb.save_db(DB_PATH, updated_db)
+                self.db = updated_db
 
     def create_profile(
         self, display_name, frame, selected_slots, target_count=3, blocked_slots=None
@@ -109,11 +167,13 @@ class GiftManager:
         profile_id = f"gift_{uuid.uuid4().hex}"
         profile = {
             "display_name": str(display_name).strip() or profile_id,
+            "character_name": "",
             "frame_id": profile_id,
             "selected_slots": slots,
             "blocked_slots": blocked_slots,
             "target_count": self._normalized_target_count(target_count),
             "enabled": True,
+            "only_gift_400": False,
         }
         with self._data_lock:
             self._write_frame(profile_id, frame)
@@ -139,6 +199,8 @@ class GiftManager:
             profile = self.db["profiles"].get(profile_id)
             if profile is None:
                 raise KeyError(profile_id)
+            if not profile["frame_id"]:
+                raise ValueError("This gift profile is recognized by its character name")
             if display_name is not None:
                 profile["display_name"] = str(display_name).strip() or profile_id
             profile["selected_slots"] = slots
@@ -148,7 +210,14 @@ class GiftManager:
             self.save()
 
     def update_profile(
-        self, profile_id, *, enabled=None, target_count=None, display_name=None, selected_slots=None
+        self,
+        profile_id,
+        *,
+        enabled=None,
+        target_count=None,
+        display_name=None,
+        selected_slots=None,
+        only_gift_400=None,
     ) -> None:
         with self._data_lock:
             profile = self.db["profiles"].get(profile_id)
@@ -156,6 +225,8 @@ class GiftManager:
                 raise KeyError(profile_id)
             if enabled is not None:
                 profile["enabled"] = bool(enabled)
+            if only_gift_400 is not None and profile["frame_id"]:
+                profile["only_gift_400"] = bool(only_gift_400)
             if target_count is not None:
                 profile["target_count"] = self._normalized_target_count(target_count)
             if display_name is not None:
@@ -173,9 +244,8 @@ class GiftManager:
             profile = self.db["profiles"].pop(profile_id, None)
             if profile is None:
                 return
-            path = self._frame_path(profile["frame_id"])
-            if path.exists():
-                path.unlink()
+            if profile["frame_id"]:
+                self._frame_path(profile["frame_id"]).unlink(missing_ok=True)
             self.save()
 
     def load_frame(self, profile_or_id) -> np.ndarray | None:
@@ -183,7 +253,12 @@ class GiftManager:
             profile = self.get_profile(profile_or_id)
         else:
             profile = profile_or_id
-        if not profile:
+        if not profile or not profile["frame_id"]:
             return None
-        image = cv2.imread(str(self._frame_path(profile["frame_id"])))
-        return image.copy() if image is not None else None
+        try:
+            data = self._frame_path(profile["frame_id"]).read_bytes()
+        except OSError:
+            return None
+        if not data:
+            return None
+        return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)

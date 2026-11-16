@@ -1,5 +1,8 @@
 import json
 import os
+import unicodedata
+
+from src.gifts.affinity import load_affinity
 
 DB_SCHEMA_VERSION = 1
 
@@ -26,12 +29,17 @@ def normalize_slots(value) -> list[int]:
     return slots
 
 
+def character_name_key(name: str) -> str:
+    return "".join(unicodedata.normalize("NFKC", name).split()).casefold()
+
+
 def normalize_profile(profile_id: str, value) -> dict | None:
     if not isinstance(value, dict):
         return None
 
-    frame_id = str(value.get("frame_id", "")).strip()
-    if not frame_id:
+    frame_id = str(value.get("frame_id") or "").strip()
+    character_name = str(value.get("character_name") or "").strip()
+    if not frame_id and not character_name:
         return None
 
     try:
@@ -39,10 +47,11 @@ def normalize_profile(profile_id: str, value) -> dict | None:
     except (TypeError, ValueError):
         target_count = 3
 
-    display_name = str(value.get("display_name", "")).strip() or profile_id
+    display_name = str(value.get("display_name", "")).strip() or character_name or profile_id
     blocked_slots = normalize_slots(value.get("blocked_slots", []))
-    return {
+    profile = {
         "display_name": display_name,
+        "character_name": character_name,
         "frame_id": frame_id,
         "selected_slots": [
             slot
@@ -52,7 +61,11 @@ def normalize_profile(profile_id: str, value) -> dict | None:
         "blocked_slots": blocked_slots,
         "target_count": target_count,
         "enabled": bool(value.get("enabled", True)),
+        "only_gift_400": not frame_id or bool(value.get("only_gift_400", False)),
     }
+    if affinity := load_affinity(value.get("affinity")):
+        profile["affinity"] = affinity.to_dict()
+    return profile
 
 
 def validate_db(db: dict) -> bool:

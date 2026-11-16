@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 from ok import Box
 
+from src.gifts.affinity import AffinityProgress, parse_affinity
 from src.Labels import Labels
 from src.tasks.daily.GiftTask import GiftTask
 
@@ -145,6 +146,7 @@ class TestGiftTask(unittest.TestCase):
         task = object.__new__(GiftTask)
         task._report = lambda _message: None
         task.screenshot = lambda _name: None
+        task._read_affinity = lambda: None
         task._read_character_gift_remaining = lambda: 1
         task._find_gift_box = lambda _profile: self.fail(
             "must not search gifts at the configured target"
@@ -164,9 +166,123 @@ class TestGiftTask(unittest.TestCase):
         self.assertEqual(summary["success"], 0)
         self.assertEqual(summary["skipped"], ["角色: 已达赠送目标 2/1"])
 
-    def test_sidebar_scan_rechecks_only_fifth_slot_after_small_scrolls(self):
+    def test_exhausted_character_does_not_use_the_shared_quota(self):
         task = object.__new__(GiftTask)
-        task.MAX_SIDEBAR_PAGES = 1
+        task._report = lambda _message: None
+        task.sleep = lambda _seconds: None
+        task.ocr = lambda *_args, **_kwargs: False
+        task._scroll_sidebar_to_top = lambda: None
+        task.operate_click = lambda *_args: None
+        task._match_current_profile = lambda profiles: next(iter(profiles))
+        remaining = iter([0, 3])
+        task._read_character_gift_remaining = lambda: next(remaining)
+        task._find_gift_box = lambda _profile: self.fail("manual gift selection used in +400 mode")
+        gift_box = object()
+        task._find_400_gift = lambda: gift_box
+        attempts = []
+        task._give_once = lambda box, count: attempts.append((box, count)) or True
+        profiles = {
+            name: {"display_name": name, "target_count": 3, "only_gift_400": True}
+            for name in ("A", "B")
+        }
+        summary = {"limit": 1, "success": 0, "skipped": [], "failed": []}
+
+        task._scan_character_list(profiles, summary)
+
+        self.assertEqual(attempts, [(gift_box, 3)])
+        self.assertEqual(summary["success"], 1)
+        self.assertEqual(summary["processed_profiles"], {"A", "B"})
+
+    def test_run_gifts_updates_every_target_even_with_zero_or_exhausted_quota(self):
+        for limit in (0, 1):
+            with self.subTest(limit=limit):
+                task = object.__new__(GiftTask)
+                task.ensure_main = lambda: None
+                task._enter_gift_page_from_main = lambda: None
+                task._read_daily_gift_remaining = lambda: limit
+                task._report = lambda _message: None
+                task.sleep = lambda _seconds: None
+                task._iter_sidebar_slots = lambda: iter((0.2, 0.4))
+                task._open_character_slot = lambda _y: None
+                task._match_current_profile = lambda profiles: next(iter(profiles))
+                gift = object()
+                task._find_400_gift = lambda: gift
+                task._read_character_gift_remaining = lambda: 3
+                attempts = []
+                task._give_once = lambda box, count: attempts.append((box, count)) or True
+                a = AffinityProgress(9, 8440, 16000)
+                after_gift = AffinityProgress(9, 8840, 16000)
+                b = AffinityProgress(8, 4000, 12000)
+                readings = iter((a, after_gift, b) if limit else (a, b))
+                task._read_affinity = lambda: next(readings)
+                profiles = {
+                    name: {"display_name": name, "target_count": 1, "only_gift_400": True}
+                    for name in ("A", "B")
+                }
+                saved = {}
+                task.manager = SimpleNamespace(
+                    get_enabled_profiles=lambda: profiles,
+                    record_affinities=saved.update,
+                )
+
+                summary = task.run_gifts()
+
+                self.assertEqual(attempts, [(gift, 3)] if limit else [])
+                self.assertEqual(summary["success"], limit)
+                self.assertEqual(saved, {"A": after_gift if limit else a, "B": b})
+
+    def test_gift_stops_after_reaching_max_affinity(self):
+        task = object.__new__(GiftTask)
+        readings = iter((AffinityProgress(9, 15900, 16000), AffinityProgress(10)))
+        task._read_affinity = lambda: next(readings)
+        task._read_character_gift_remaining = lambda: 3
+        task._find_400_gift = lambda: object()
+        task._give_once = lambda *_: True
+        task._report = lambda _message: None
+        task.sleep = lambda _seconds: None
+        profile = {"display_name": "角色", "target_count": 3, "only_gift_400": True}
+        summary = {"success": 0, "skipped": [], "failed": []}
+
+        task._give_profile("role", profile, summary)
+
+        self.assertEqual(summary["success"], 1)
+        self.assertEqual(summary["affinities"]["role"].level, 10)
+
+    def test_400_gift_mode_reminds_when_no_eligible_gift_is_found(self):
+        task = object.__new__(GiftTask)
+        task.ocr = lambda *_args, **_kwargs: False
+        task.screenshot = lambda _name: None
+        task._read_character_gift_remaining = lambda: 3
+        task._find_400_gift = lambda: None
+        task._give_once = lambda *_: self.fail("must not send without a matched gift")
+        profile = {"display_name": "角色", "target_count": 1, "only_gift_400": True}
+        summary = {"success": 0, "skipped": [], "failed": []}
+
+        task._give_profile("profile", profile, summary)
+
+        self.assertEqual(summary["restock"], ["角色"])
+        self.assertEqual(summary["success"], 0)
+
+    def test_400_gift_scan_requires_a_positive_stock_count(self):
+        task = object.__new__(GiftTask)
+        task._executor = SimpleNamespace(frame=np.zeros((10, 10, 3), dtype=np.uint8))
+        gift_boxes = [Box(0, 0, 10, 10, name=str(index)) for index in range(4)]
+        task.get_gift_boxes = lambda: gift_boxes
+        task.find_one = lambda _label, *, box, frame: box.name.startswith("2_")
+        scores = ["200", "400", "400", "400"]
+        stocks = ["400", "0", "19", "21"]
+
+        def ocr(left, _top, _right, _bottom, *, match, **_kwargs):
+            index = round((left - task.GIFT_FIRST_RATIO[0]) / task.GIFT_COLUMN_STEP)
+            value = scores[index] if match == task.AFFINITY_RE else stocks[index]
+            return [SimpleNamespace(name=value)] if match.fullmatch(value) else []
+
+        task.ocr = ocr
+
+        self.assertIs(task._find_400_gift(), gift_boxes[3])
+
+    def test_sidebar_scan_rechecks_all_visible_slots_and_requires_two_still_frames(self):
+        task = object.__new__(GiftTask)
         task._scroll_sidebar_to_top = lambda: None
         task.sleep = lambda _seconds: None
         clicked_slots = []
@@ -176,10 +292,8 @@ class TestGiftTask(unittest.TestCase):
         task._executor = SimpleNamespace(frame=np.zeros((1, 1, 3), dtype=np.uint8))
         task._sidebar_box = lambda: Box(0, 0, 1, 1)
 
-        scroll_count = [0]
-        task.scroll_and_is_end = lambda *_args, **_kwargs: (
-            scroll_count.__setitem__(0, scroll_count[0] + 1) or False
-        )
+        scroll_states = iter((False, True, False, True, True))
+        task.scroll_and_is_end = lambda *_args, **_kwargs: next(scroll_states)
 
         GiftTask._scan_character_list(
             task,
@@ -187,8 +301,70 @@ class TestGiftTask(unittest.TestCase):
             {"success": 0, "skipped": [], "failed": []},
         )
 
-        expected_clicked_slots = list(GiftTask.CHARACTER_SLOT_YS)
-        expected_clicked_slots.extend(
-            [GiftTask.CHARACTER_SLOT_YS[-1]] * GiftTask.SIDEBAR_SCROLLS_PER_CHARACTER
+        self.assertEqual(clicked_slots, list(GiftTask.CHARACTER_SLOT_YS) * 3)
+
+    def test_character_discovery_reads_newly_revealed_roles_without_sending_gifts(self):
+        task = object.__new__(GiftTask)
+        task.ensure_main = lambda: None
+        task._enter_gift_page_from_main = lambda: None
+        task._report = lambda _message: None
+        task._scroll_sidebar_to_top = lambda: None
+        task.sleep = lambda _seconds: None
+        task.CHARACTER_SLOT_YS = (0.2, 0.4)
+        task._sidebar_box = lambda: Box(0, 0, 1, 1)
+        scroll_ends = iter((False, True, True))
+        task.scroll_and_is_end = lambda *_args, **_kwargs: next(scroll_ends)
+        task._give_profile = lambda *_: self.fail("character discovery must not send gifts")
+        names = iter(("真红", "明音凛", " 明 音 凛 ", "伊洛伊"))
+        task._read_character_name = lambda: next(names)
+        task._read_affinity = lambda: parse_affinity(["9", "8440/16000"])
+        clicks = []
+        task.operate_click = lambda _x, y: clicks.append(y)
+        registered = []
+        task.manager = SimpleNamespace(
+            register_characters=lambda names, **_: registered.extend(names) or len(names)
         )
-        self.assertEqual(clicked_slots, expected_clicked_slots)
+
+        task._discover_characters()
+
+        self.assertEqual(clicks, [0.2, 0.4, 0.2, 0.4])
+        self.assertEqual(registered, ["真红", "明音凛", "伊洛伊"])
+        self.assertEqual(task.scan_result, (3, 3))
+
+    def test_gift_ocr_matches_the_registered_name_even_when_the_display_name_is_edited(self):
+        task = object.__new__(GiftTask)
+        task._report = lambda _message: None
+        task.get_name_box = lambda: Box(0, 0, 100, 20)
+        profiles = {"role": {"display_name": "明音", "character_name": "明音凛"}}
+        names = iter(("明 音 凛", "明音"))
+        task.ocr = lambda **_kwargs: [SimpleNamespace(name=next(names))]
+
+        self.assertEqual(task._match_current_profile(profiles), "role")
+        self.assertIsNone(task._match_current_profile(profiles))
+
+    def test_gift_ocr_rechecks_recipient_before_committing(self):
+        task = object.__new__(GiftTask)
+        task._read_character_gift_remaining = lambda: 3
+        task.ocr = lambda *_args, **_kwargs: []
+        task._find_400_gift = lambda: object()
+        task._read_character_name = lambda: "伊洛伊"
+        task._give_once = lambda *_: self.fail("the recipient changed")
+        profile = {
+            "display_name": "明音",
+            "character_name": "明音凛",
+            "only_gift_400": True,
+            "target_count": 1,
+        }
+        summary = {"success": 0, "skipped": [], "failed": []}
+
+        task._give_profile("role", profile, summary)
+
+        self.assertEqual(summary["success"], 0)
+        self.assertEqual(len(summary["skipped"]), 1)
+
+    def test_affinity_gap_uses_all_remaining_levels_and_checks_live_denominator(self):
+        self.assertEqual(parse_affinity(["好感度", "9", "8,440/16,000"]).remaining, 7560)
+        self.assertEqual(parse_affinity(["8", "4,000/12,000"]).remaining, 24000)
+        self.assertEqual(parse_affinity(["10", "3210"]).remaining, 0)
+        self.assertIsNone(parse_affinity(["8", "4,000/12,050"]).remaining)
+        self.assertIsNone(parse_affinity(["好感度"]))
